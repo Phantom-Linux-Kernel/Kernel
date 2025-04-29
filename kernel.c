@@ -1,6 +1,38 @@
 #define VGA_ADDRESS 0xB8000
 #define VGA_WIDTH 80
 #define VGA_HEIGHT 25
+// I/O ports
+static inline void outb(unsigned short port, unsigned char val);
+static inline unsigned char inb(unsigned short port);
+static inline unsigned short inw(unsigned short port);
+static inline void outw(unsigned short port, unsigned short val);
+
+// Utility functions
+int atoi(const char *str);
+char *strncpy(char *dest, const char *src, unsigned int n);
+
+// ATA functions (if defined later)
+void ata_read_sector(unsigned int lba, unsigned char *buffer);
+void ata_write_sector(unsigned int lba, unsigned char *buffer) {
+    outb(0x1F6, 0xE0 | ((lba >> 24) & 0x0F)); // LBA mode, master
+    outb(0x1F2, 1); // Sector count
+    outb(0x1F3, (unsigned char)(lba & 0xFF));
+    outb(0x1F4, (unsigned char)((lba >> 8) & 0xFF));
+    outb(0x1F5, (unsigned char)((lba >> 16) & 0xFF));
+    outb(0x1F7, 0x30); // WRITE SECTOR command
+
+    while (!(inb(0x1F7) & 0x08)); // Wait for DRQ
+
+    for (int i = 0; i < 256; i++) {
+        unsigned short data = buffer[i * 2] | (buffer[i * 2 + 1] << 8);
+        outw(0x1F0, data);
+    }
+
+    // Flush cache
+    outb(0x1F7, 0xE7);
+    while (inb(0x1F7) & 0x80); // Wait for BSY to clear
+}
+int ata_drive_detect();
 
 unsigned short *terminal_buffer;
 unsigned int terminal_row;
@@ -22,6 +54,39 @@ void clearf(void) {
     }
     terminal_row = 0;
     terminal_column = 0;
+}
+static inline void outb(unsigned short port, unsigned char val) {
+    __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
+}
+
+
+static inline unsigned short inw(unsigned short port) {
+    unsigned short ret;
+    __asm__ volatile ("inw %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
+}
+
+static inline void outw(unsigned short port, unsigned short val) {
+    __asm__ volatile ("outw %0, %1" : : "a"(val), "Nd"(port));
+}
+int atoi(const char *str) {
+    int result = 0;
+    while (*str >= '0' && *str <= '9') {
+        result = result * 10 + (*str - '0');
+        str++;
+    }
+    return result;
+}
+char *strncpy(char *dest, const char *src, unsigned int n) {
+    unsigned int i = 0;
+    while (i < n && src[i]) {
+        dest[i] = src[i];
+        i++;
+    }
+    while (i < n) {
+        dest[i++] = '\0';
+    }
+    return dest;
 }
 
 void putchar_at(char c, unsigned char color, unsigned int x, unsigned int y) {
@@ -54,6 +119,44 @@ void printf(char *str, unsigned char color) {
         index++;
     }
 }
+int ata_drive_detect() {
+    outb(0x1F6, 0xA0);          // Select drive 0 (master)
+    outb(0x1F2, 0);             // Sector count = 0
+    outb(0x1F3, 0);
+    outb(0x1F4, 0);
+    outb(0x1F5, 0);
+    outb(0x1F7, 0xEC);          // IDENTIFY command
+
+    unsigned char status = inb(0x1F7);
+    if (status == 0) return 0; // No drive
+
+    while ((inb(0x1F7) & 0x80)); // Wait for BSY to clear
+    while (!(inb(0x1F7) & 0x08)); // Wait for DRQ
+
+    // Read 256 words of IDENTIFY data (optional)
+    for (int i = 0; i < 256; i++) {
+        inw(0x1F0); // discard data
+    }
+
+    return 1; // Drive detected
+}
+void ata_read_sector(unsigned int lba, unsigned char *buffer) {
+    outb(0x1F6, 0xE0 | ((lba >> 24) & 0x0F)); // LBA mode, master drive
+    outb(0x1F2, 1);                           // Sector count = 1
+    outb(0x1F3, (unsigned char)(lba & 0xFF));
+    outb(0x1F4, (unsigned char)((lba >> 8) & 0xFF));
+    outb(0x1F5, (unsigned char)((lba >> 16) & 0xFF));
+    outb(0x1F7, 0x20);                        // READ SECTOR command
+
+    while (!(inb(0x1F7) & 0x08));             // Wait for DRQ
+
+    for (int i = 0; i < 256; i++) {
+        unsigned short data = inw(0x1F0);
+        buffer[i * 2] = data & 0xFF;
+        buffer[i * 2 + 1] = (data >> 8) & 0xFF;
+    }
+}
+
 
 // Scancode to ASCII mappings
 char scancode_to_ascii[128] = {
@@ -193,9 +296,23 @@ void main(void) {
             } else if (strcmp(cmd.cmd, "clear") == 0) {
                 clearf();
             } else if (strcmp(cmd.cmd, "help") == 0) {
-                printf("Available commands: echo, clear, help\n", 14);
+                printf("Available commands: echo, clear, read, write, help\n", 14);
+            } else if (strcmp(cmd.cmd, "read") == 0 && cmd.argc == 1) {
+                unsigned char buffer[512];
+                unsigned int lba = atoi(cmd.args[0]); // you’d implement your own atoi
+                ata_read_sector(lba, buffer);
+                for (int i = 0; i < 512; i++) {
+                    putchar(buffer[i], 15); // crude print of raw sector
+                }
+            } else if (strcmp(cmd.cmd, "write") == 0 && cmd.argc == 2) {
+                unsigned char buffer[512];
+                for (int i = 0; i < 512; i++) buffer[i] = 0;
+                strncpy(buffer, cmd.args[1], 512); // crude string write
+                unsigned int lba = atoi(cmd.args[0]);
+                ata_write_sector(lba, buffer);
             } else {
                 printf("Unknown command\n", 12);
+            
             }
         }
     }
