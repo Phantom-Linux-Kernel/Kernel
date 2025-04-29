@@ -301,8 +301,11 @@ void main(void) {
                 unsigned char buffer[512];
                 unsigned int lba = atoi(cmd.args[0]); // you’d implement your own atoi
                 ata_read_sector(lba, buffer);
-                for (int i = 0; i < 512; i++) {
-                    putchar(buffer[i], 15); // crude print of raw sector
+                 for (int i = 0; i < 512; i++) {
+                    char c = buffer[i];
+                    if (c >= 32 && c <= 126) {
+                        putchar(c, 15);
+                    }
                 }
             } else if (strcmp(cmd.cmd, "write") == 0 && cmd.argc == 2) {
                 unsigned char buffer[512];
